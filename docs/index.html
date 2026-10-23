@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>可轉債雷達</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>可轉債雷達</h1>
+    <p id="meta-line">載入中…</p>
+    <ul id="warnings"></ul>
+  </header>
+
+  <section id="filters">
+    <label><input type="checkbox" id="f-traded" checked> 只看今天有成交</label>
+    <label><input type="checkbox" id="f-startable" checked> 排除還不能轉換</label>
+    <label><input type="checkbox" id="f-exchangeable" checked> 排除交換債</label>
+    <span id="row-count"></span>
+  </section>
+
+  <table id="cb-table">
+    <thead>
+      <tr>
+        <th data-key="cb_id">代號</th>
+        <th data-key="cb_name">名稱</th>
+        <th data-key="signal">訊號</th>
+        <th data-key="premium" class="sorted">溢價率</th>
+        <th data-key="cb_close">CB 收盤</th>
+        <th data-key="stock_close">股票收盤</th>
+        <th data-key="conv_price_now">轉換價</th>
+        <th data-key="volume">成交量(張)</th>
+        <th data-key="inst_net_5d">法人5日(張)</th>
+      </tr>
+    </thead>
+    <tbody id="cb-tbody"></tbody>
+  </table>
+
+  <div id="detail" hidden>
+    <div id="detail-box">
+      <button id="detail-close" aria-label="關閉">×</button>
+      <h2 id="detail-title"></h2>
+      <svg id="detail-chart" viewBox="0 0 600 240" preserveAspectRatio="none"></svg>
+      <p id="detail-empty" hidden>這檔還沒有足夠的歷史資料可以畫圖。</p>
+    </div>
+  </div>
+
+  <footer>
+    <p>資料來源：櫃買中心、證交所、公開資訊觀測站。收盤後資料，不是即時行情；僅供研究，不構成投資建議。</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

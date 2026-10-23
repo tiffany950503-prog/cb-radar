@@ -2,7 +2,7 @@
 
 每個交易日收盤後抓可轉債、股價、法人資料，串成一張表，算出每檔可轉債的轉換價值和溢價率。
 
-最後更新：2026-10-22（第一版完成，已用華星光三、今國光三實際驗證）
+最後更新：2026-10-23（補上 docs/ 靜態網頁、訊號分級、流動性門檻、point-in-time 修正、Decimal 精確運算；34 個 pytest 案例；已對 tiffany950503-prog/cb-radar 送 PR #1）
 
 ## 檔案
 
@@ -62,11 +62,11 @@ python build.py <最近交易日>        # 套用新轉換價
 
 公開資訊觀測站的 robots.txt 不允許自動程式抓取，所以這支程式**只在自己電腦手動執行**，每次只送一個請求，不放進 GitHub Actions。
 
-也可以手動在 `data/conv_price_adjustments.csv` 加一行：
+也可以手動在 `data/conv_price_adjustments.csv` 加一行（`recorded_at` 可以留空，`build.py` 會保守當作跟 `effective_date` 同時已知）：
 
 ```csv
-cb_id,conv_price,effective_date
-49793,175.7,2026-07-20
+cb_id,conv_price,effective_date,recorded_at
+49793,175.7,2026-07-20,2026-07-21
 ```
 
 ## 計算方式
@@ -83,12 +83,38 @@ cb_id,conv_price,effective_date
 | `cb_close`、`stock_close` | 可轉債、股票收盤價 |
 | `conv_price_now` | 計算用的轉換價 |
 | `premium` | 溢價率，`-0.02` 代表 −2% |
+| `premium_null_reason` | `premium` 是空值時，為什麼（`not_traded`／`no_stock_price`／`no_conv_price`／`exchangeable`），正常有算出來時是 `None` |
+| `signal` | 訊號分級：`candidate`（折價、可執行、成交量 ≥ `MIN_VOLUME`，值得看一眼）／`suspect`（深度折價，多半是轉換價沒更新，別當成機會）／`none`（其他，包含折價但量太薄的情況） |
+| `volume` | 當天成交量（張）。`signal` 會檢查這個是否 ≥ `MIN_VOLUME`（目前 10 張，粗略估計值，`build.py` 裡可調），量太薄不當訊號 |
+| `conv_price_asof` | 這批 premium 實際套用的轉換價調整，裡面最新一筆的生效日；只會套用「當天已經知道」的調整（見下方 Point-in-time 說明） |
+| `fetched_at` | 這批原始資料是哪次 `fetch.py` 跑出來的（UTC 時間戳）；手動補的歷史資料沒有這個檔案時是 `None` |
 | `inst_net_5d` | 三大法人近 5 日買賣超（張） |
 | `traded_today` | 當天有沒有成交（約一半沒有） |
 | `conv_not_started` | 轉換期間還沒開始，不能套利 |
 | `is_exchangeable` | 交換債（名稱有 E），換的是別家股票，溢價率已清空 |
 
 私募債（代號不是數字）已自動排除。
+
+### Point-in-time（避免 look-ahead bias）
+
+`conv_price_adjustments.csv` 多一欄 `recorded_at`：這筆轉換價調整是「第一次」被 `mops_conv_price.py` 抓到的日期（舊資料沒有這欄時，保守當作跟 `effective_date` 同時已知）。
+`build.py` 處理某一天時，只會套用「生效日 ≤ 那天」**而且**「我們在那天之前就已經抓到」的調整（`select_known_adjustments()`）——這樣重新執行 `python build.py <過去日期>` 不會悄悄用到「現在才知道的回溯調整」去改寫那天當時算出來的溢價率。
+
+### Decimal 精確運算
+
+`calc_valuation()` 算轉換價值、溢價率的核心除法用 Python `Decimal` 而不是一般浮點數，算完量化（6 位小數）再轉回 float 存進表格——避免 pandas 浮點運算本身的二進位誤差。這不是從頭到尾的字串-to-Decimal 全鏈路（上游 CSV/JSON 轉數字那一步本來就會過一次 float），只處理核心公式這一段，對 400 多檔、台股最小跳動單位的場景已經足夠，JSON/瀏覽器端本來就只有 float64，做到端對端 Decimal 沒有實際效益。
+
+## 網頁（docs/）
+
+`build.py` 最後會把當天排行榜寫成 `docs/data/latest.json`，近 60 個交易日的溢價率走勢寫成
+`docs/data/history.json`，給 `docs/index.html`（純 HTML/CSS/JS，沒有框架、沒有後端）讀取顯示：
+
+- 表格依溢價率排序，可篩選「只看今天有成交」「排除還不能轉換」「排除交換債」
+- `signal = candidate` 的列會標綠色「訊號」，`suspect` 標橘色「⚠ 資料可疑」；成交量不足 `MIN_VOLUME` 的列即使折價也不會標
+- 點一列會跳出該檔過去幾天的溢價率走勢圖
+
+用 GitHub Pages（從 `main` 分支的 `/docs` 資料夾）部署，每次 Actions 把新的 JSON push 回 `main` 就會自動重新部署，不需要另外架伺服器。
+本機預覽：`python -m http.server --directory docs`。
 
 ## 健康檢查
 

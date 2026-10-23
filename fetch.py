@@ -157,6 +157,12 @@ def fetch_institutional(day):
     save(day, "institutional", rows)
 
 
+def write_meta(day):
+    """記錄這批原始資料是什麼時候抓的，給 build.py 的 fetched_at 欄位用（資料來源/時戳追溯）。"""
+    meta = {"fetched_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    (C.RAW_DIR / day / "_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     day = args[0] if args else dt.date.today().isoformat()
@@ -164,8 +170,10 @@ def main():
     fetch_open_data(day)
     if "--no-inst" in sys.argv:
         print("已跳過法人資料。")
+        write_meta(day)
         return
     fetch_institutional(day)
+    write_meta(day)
 
 if __name__ == "__main__":
     main()

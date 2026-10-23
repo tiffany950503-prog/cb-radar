@@ -123,17 +123,36 @@ def extract(df):
 
 
 def merge_into_file(new):
-    """和現有檔案合併：同一檔、同一生效日只留一筆，手動加的紀錄也會保留。"""
+    """和現有檔案合併：同一檔、同一生效日只留一筆，手動加的紀錄也會保留。
+
+    recorded_at：這筆調整是「第一次」被我們抓到的日期，給 build.py 的 point-in-time
+    過濾用（select_known_adjustments）。只有真的沒看過的 (cb_id, effective_date) 組合
+    才蓋上今天的日期；已經在檔案裡的，保留它原本的 recorded_at（即使是空的），
+    不能因為重新抓到同一筆就把「第一次知道」的時間往後推。
+    """
     cols = ["cb_id", "conv_price", "effective_date"]
     if ADJ_PATH.exists():
         old = pd.read_csv(ADJ_PATH, dtype=str, encoding="utf-8-sig", skipinitialspace=True)
         old.columns = old.columns.str.strip().str.lstrip("﻿")
     else:
         old = pd.DataFrame(columns=cols)
+    if "recorded_at" not in old.columns:
+        old["recorded_at"] = pd.NA
+
+    today = dt.date.today().isoformat()
+    existing_keys = set(zip(old["cb_id"].astype(str), old["effective_date"].astype(str)))
     new = new.assign(conv_price=new["conv_price"].map(lambda x: f"{x:g}"))
-    allrows = pd.concat([old[cols].astype(str), new[cols].astype(str)], ignore_index=True)
+    new["recorded_at"] = [
+        pd.NA if (cb, eff) in existing_keys else today
+        for cb, eff in zip(new["cb_id"].astype(str), new["effective_date"].astype(str))
+    ]
+
+    allcols = cols + ["recorded_at"]
+    allrows = pd.concat([old[allcols].astype(str), new[allcols].astype(str)], ignore_index=True)
     allrows["cb_id"] = allrows["cb_id"].str.strip()
-    allrows = (allrows.drop_duplicates(["cb_id", "effective_date"], keep="last")
+    allrows.loc[allrows["recorded_at"].isin(["nan", "<NA>", "None"]), "recorded_at"] = ""
+    # old 在前、new 在後；keep="first" 保留舊紀錄原本的 recorded_at，不被重新抓到的這次覆蓋
+    allrows = (allrows.drop_duplicates(["cb_id", "effective_date"], keep="first")
                       .sort_values(["cb_id", "effective_date"]))
     allrows.to_csv(ADJ_PATH, index=False, encoding="utf-8-sig")
     return len(old), len(allrows)
