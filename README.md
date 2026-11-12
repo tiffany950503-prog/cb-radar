@@ -12,6 +12,7 @@ build.py              串表＋計算＋健康檢查 → data/cb.db、data/daily
 mops_conv_price.py    MOPS 最新轉換價 → data/conv_price_adjustments.csv（每週手動）
 check_ready.py        檢查今天的資料出來了沒（決定排程時間用）
 verify_sample.py      抽 30～50 檔產生核對表、計算和外部資料的一致率
+backfill.py           補抓缺少的交易日
 alerts.py             今日訊號的判斷條件
 app.py                研究 App（streamlit run app.py）
 discover_endpoints.py 列出櫃買中心 OpenAPI 的債券端點（已用過，留作參考）
@@ -26,7 +27,7 @@ config.py             網址、欄位對照、門檻設定
 | 可轉債發行條件 | 櫃買中心 OpenAPI `/v1/bond_ISSBD5_data` | JSON | 只有「發行時」轉換價 |
 | 可轉債每日收盤價 | 櫃買中心每日行情檔 `RSta0113.<日期>-C.csv` | CSV（Big5） | OpenAPI 沒有可轉債行情；只取「等價」列 |
 | 上市股價 | 證交所每日收盤行情 `MI_INDEX` | JSON，可指定日期 | OpenAPI 的 `STOCK_DAY_ALL` 只有最新一天且更新較晚，已不用 |
-| 上櫃股價 | 櫃買中心 OpenAPI `tpex_mainboard_daily_close_quotes` | JSON | 只有最新一天，要當天執行 |
+| 上櫃股價 | 櫃買中心「上櫃股票每日收盤行情」`afterTrading/otc` | JSON，可指定日期 | 原本的 OpenAPI 只有最新一天、1.3 萬筆常下載中斷，2026-11-12 改用這個 |
 | 三大法人 | 證交所 `T86`＋櫃買中心三大法人買賣明細 | JSON，一次全市場 | 近 5 個交易日共 10 個請求；原本用 FinMind 要 40 分鐘，已改掉 |
 | 最新轉換價 | 公開資訊觀測站「最近三個月現況查詢」`ajax_t120sb02` | HTML | 一次請求約 425 檔；每週手動執行一次 |
 
@@ -136,7 +137,21 @@ python verify_sample.py check 2026-10-30   # 印出一致率與不一致清單
 ## 自動排程
 
 `.github/workflows/daily.yml` 設定在**每個交易日台灣時間 17:30** 執行 `fetch.py` 和 `build.py`
-（2026-10-22 用 `check_ready.py` 確認 17:15 時資料已到齊）。
+（2026-10-22 用 `check_ready.py` 確認 17:15 時資料已到齊），**19:30 再跑一次當備援**：
+17:30 已經成功的話會自動跳過。
+
+- 每個請求最多等 30 秒，失敗會自動重試 4 次。
+- 每次抓取的結果（成功、休市、失敗與原因）記在 `data/fetch_log.csv`，App 的「資料品質」頁也看得到。
+- 2026-10～11 有 6 天排程失敗，原因都是上櫃股價下載到一半被切斷，已改用新的資料來源並加上重試。
+
+### 補抓缺少的日子
+
+```powershell
+python backfill.py 2026-10-23 2026-11-05 --dry   # 先看會補哪幾天
+python backfill.py 2026-10-23 2026-11-05         # 真的補抓
+```
+
+也可以在 GitHub 的 Actions 頁面按 **Run workflow**，填入要補的日期。
 
 1. 推上 GitHub（`.gitignore` 會排除 `.venv`、`data/raw`）。不需要任何金鑰。
 2. 到 Actions 分頁按 `Run workflow` 手動測一次，確認 GitHub 的國外伺服器連得到證交所和櫃買中心。

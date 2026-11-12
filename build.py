@@ -107,8 +107,11 @@ def drop_expired(terms, day):
         gone |= maturity.notna() & (maturity < day)
     if balance is not None:
         gone |= balance.notna() & (balance <= 0)
+    if "issue_date" in terms:  # 補抓過去的日期時，排除當時還沒發行的
+        issued = terms["issue_date"].map(norm_date)
+        gone |= issued.notna() & (issued > day)
     if gone.any():
-        print(f"  已排除到期或餘額為 0 的 {gone.sum()} 檔")
+        print(f"  已排除到期、餘額為 0 或當時尚未發行的 {gone.sum()} 檔")
     return terms[~gone].copy(), int(gone.sum())
 
 

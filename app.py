@@ -9,6 +9,7 @@
 from pathlib import Path
 
 import pandas as pd
+import altair as alt
 import streamlit as st
 
 import alerts
@@ -27,7 +28,7 @@ def available_days():
 @st.cache_data(ttl=600)
 def load_day(day):
     df = pd.read_csv(DATA / f"daily_{day}.csv", dtype={"cb_id": str, "stock_id": str}, encoding="utf-8-sig")
-    for col in ["traded_today", "conv_not_started", "is_exchangeable", "code_mismatch"]:
+    for col in ["traded_today", "conv_not_started", "is_exchangeable", "code_mismatch", "low_liquidity"]:
         if col in df:
             df[col] = df[col].astype(str).str.lower().isin(["true", "1"])
         else:
@@ -46,6 +47,25 @@ def load_history():
 def load_quality():
     p = DATA / "quality_report.csv"
     return pd.read_csv(p, dtype={"date": str}, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def load_fetch_log():
+    p = DATA / "fetch_log.csv"
+    return pd.read_csv(p, dtype=str, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+
+
+def line_chart(data, title, fmt=",.2f"):
+    """折線圖：Y 軸依數字範圍調整，不從 0 開始，變化才看得出來。data 的 index 是日期。"""
+    long = data.reset_index(names="日期").melt("日期", var_name="項目", value_name="數值").dropna()
+    chart = (alt.Chart(long).mark_line(point=True)
+             .encode(x=alt.X("日期:N", title=None),
+                     y=alt.Y("數值:Q", title=None, scale=alt.Scale(zero=False)),
+                     color=alt.Color("項目:N", legend=alt.Legend(orient="bottom", title=None)),
+                     tooltip=["日期", "項目", alt.Tooltip("數值:Q", format=fmt)])
+             .properties(height=260))
+    st.caption(title)
+    st.altair_chart(chart, width="stretch")
 
 
 def pct(x, digits=1):
@@ -243,9 +263,20 @@ def page_list():
     cols = {"cb_id": "代號", "cb_name": "名稱", "stock_id": "股票", "cb_close": "可轉債價", "stock_close": "股價",
             "conv_price_now": "轉換價", "premium": "溢價率（%）", "volume": "成交（張）",
             "inst_net_5d": "法人 5 日（張）", "conv_price_source": "轉換價來源"}
+    view = view.copy()
+    view["提醒"] = [
+        "、".join(x for x in [
+            "成交少" if lowliq else "",
+            "轉換價核對不一致" if check == "不一致" else "",
+            "未開始轉換" if notstart else "",
+        ] if x) for lowliq, check, notstart in zip(
+            view["low_liquidity"], view.get("issue_price_check", pd.Series("", index=view.index)),
+            view["conv_not_started"])]
+    cols["提醒"] = "提醒"
     show = view[[c for c in cols if c in view]].rename(columns=cols)
     show["溢價率（%）"] = show["溢價率（%）"] * 100
-    st.caption(f"共 {len(show)} 檔，點表格任一列可選取，再按下方按鈕看個股頁。")
+    st.caption(f"共 {len(show)} 檔，點表格任一列可選取，再按下方按鈕看個股頁。"
+               "「成交少」代表當天成交不到 10 張，收盤價參考性低。")
     event = st.dataframe(
         show, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row",
         column_config={"溢價率（%）": st.column_config.NumberColumn(format="%.2f"),
@@ -272,6 +303,10 @@ def page_detail():
         st.warning("這是交換債，換的是別家公司的股票，溢價率不適用。")
     if r.get("conv_not_started"):
         st.info("轉換期間還沒開始，目前不能轉換成股票。")
+    if r.get("low_liquidity"):
+        st.warning(f"今天只成交 {num(r.get('volume'), '{:,.0f}')} 張，收盤價參考性低，溢價率請保守看待。")
+    if r.get("issue_price_check") == "不一致":
+        st.error("公開資訊觀測站與櫃買中心的發行時轉換價不一致，這檔的轉換價可能有誤，請先人工確認。")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("可轉債價", num(r.get("cb_close")))
@@ -287,10 +322,9 @@ def page_detail():
         if len(h) < 2:
             st.info("歷史資料還不到兩天，累積幾天後就會出現走勢圖。")
         else:
-            st.caption("可轉債價與轉換價值（每 100 元面額）")
-            st.line_chart(h[["cb_close", "conv_value"]].rename(columns={"cb_close": "可轉債價", "conv_value": "轉換價值"}))
-            st.caption("溢價率（%）")
-            st.line_chart((h["premium"] * 100).rename("溢價率"))
+            line_chart(h[["cb_close", "conv_value"]].rename(columns={"cb_close": "可轉債價", "conv_value": "轉換價值"}),
+                       "可轉債價與轉換價值（每 100 元面額）")
+            line_chart((h["premium"] * 100).rename("溢價率（%）").to_frame(), "溢價率（%）")
     with tab_terms:
         terms = {
             "發行時轉換價": num(r.get("conv_price")),
@@ -315,6 +349,8 @@ def page_detail():
             "可轉債價格日期": r.get("cb_price_date") if pd.notna(r.get("cb_price_date")) else "當天沒有成交",
             "轉換價來源": r.get("conv_price_source", "—"),
             "代號對應": "⚠ 發行公司代號和可轉債代號不同" if r.get("code_mismatch") else "一致",
+            "發行時轉換價核對（MOPS 與櫃買中心）": r.get("issue_price_check", "—"),
+            "當天成交量（張）": num(r.get("volume"), "{:,.0f}"),
         }
         st.table(pd.DataFrame(src.items(), columns=["項目", "內容"]).astype(str).set_index("項目"))
         st.caption("公告連結（P0 待做）：之後會連到公開資訊觀測站的相關公告。")
@@ -331,13 +367,29 @@ def page_quality():
     c1.metric("紀錄天數", f"{len(q)} 天")
     c2.metric("正常", f"{(q['status'] == 'OK').sum()} 天")
     c3.metric("有警告", f"{(q['status'] == 'WARN').sum()} 天")
+    latest = q.iloc[-1]
+    if pd.notna(latest.get("mops_age_days")) and str(latest.get("mops_age_days")) != "":
+        st.caption(f"最近一次 MOPS 轉換價更新：{int(float(latest['mops_age_days']))} 天前（{latest['date']} 時）")
+
+    flog = load_fetch_log()
+    if not flog.empty:
+        failed = flog[flog["status"] == "FAILED"]
+        recent = failed.tail(5).iloc[::-1]
+        if len(recent):
+            with st.expander(f"抓取失敗紀錄（共 {len(failed)} 次，顯示最近 5 次）"):
+                st.dataframe(recent.rename(columns={"run_at": "執行時間", "day": "資料日期", "status": "結果",
+                                                    "message": "原因"}), hide_index=True, width="stretch")
+                st.caption("排程失敗時會在 19:30 再試一次；仍缺的日期可以用 backfill.py 補抓。")
+
     trading = q[q["status"] != "CLOSED"].set_index("date")
     if len(trading) >= 2:
-        st.caption("有成交比例、有股價比例")
-        st.line_chart(trading[["traded_ratio", "stock_coverage"]].astype(float).rename(
-            columns={"traded_ratio": "有成交", "stock_coverage": "有股價"}))
+        line_chart((trading[["traded_ratio", "stock_coverage"]].astype(float) * 100).rename(
+            columns={"traded_ratio": "有成交（%）", "stock_coverage": "有股價（%）"}), "有成交比例、有股價比例（%）", ",.1f")
     names = {"date": "日期", "status": "狀態", "cb_count": "檔數", "traded_count": "有成交",
              "missing_conv_price": "缺轉換價", "deep_discount": "折價 > 5%", "stale_stock_date": "股價日期不符",
+             "issue_price_mismatch": "MOPS 核對不一致", "low_liquidity": "成交少於 10 張",
+             "mops_age_days": "MOPS 幾天前更新", "count_change": "檔數變動",
+             "unexplained_conv_change": "轉換價無紀錄變動", "price_jumps": "價格單日大變動",
              "mops_adjusted": "MOPS 轉換價", "foreign_excluded": "排除外幣債", "expired_excluded": "排除到期",
              "code_mismatch": "代號不一致", "warnings": "警告"}
     st.dataframe(q.sort_values("date", ascending=False)[[c for c in names if c in q]].rename(columns=names),

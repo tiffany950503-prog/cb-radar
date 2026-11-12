@@ -1,29 +1,59 @@
-# 每個交易日台灣時間 17:30 自動抓資料並建表（cron 用 UTC，台灣時間減 8 小時：09:30）
-# 2026-10-22 用 check_ready.py 確認：17:15 時三個資料來源都已到齊，多留 15 分鐘緩衝
-# 注意：GitHub 排程偶爾會延遲幾分鐘到幾十分鐘；國定假日沒有資料，fetch.py 會直接停止
+# 每個交易日自動抓資料並建表。cron 用 UTC（台灣時間減 8 小時）：
+#   09:30 UTC = 台灣 17:30（主要時段，17:15 前資料通常已到齊）
+#   11:30 UTC = 台灣 19:30（備援：主要時段失敗或延遲時再跑一次；當天已有資料就自動跳過）
+# 2026-11-12：加入備援時段、逾時上限、失敗也記錄原因（data/fetch_log.csv）
 name: daily-cb-data
 on:
   schedule:
     - cron: "30 9 * * 1-5"
-  workflow_dispatch: {}   # 也可以在 GitHub 頁面手動按執行
+    - cron: "30 11 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "指定日期（例如 2026-10-27），留空 = 今天"
+        required: false
+        default: ""
+
+concurrency:
+  group: daily-cb-data   # 兩個時段不會同時跑
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
+    env:
+      DAY: ${{ inputs.day }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python fetch.py
-      - run: python build.py
-      - name: 把當天結果 commit 回 repo
+          python-version: "3.12"
+      - name: 決定日期、檢查是否已經有資料
+        id: check
+        run: |
+          D="${DAY:-$(date -u +%F)}"
+          echo "day=$D" >> "$GITHUB_OUTPUT"
+          if [ -f "data/daily_$D.csv" ]; then
+            echo "$D 已經有資料，跳過"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.skip != 'true'
+        run: pip install -r requirements.txt
+      - name: 抓資料
+        if: steps.check.outputs.skip != 'true'
+        run: python fetch.py ${{ steps.check.outputs.day }}
+      - name: 建表
+        if: steps.check.outputs.skip != 'true'
+        run: python build.py ${{ steps.check.outputs.day }}
+      - name: 把結果（含失敗紀錄）存回 repo
+        if: always() && steps.check.outputs.skip != 'true'
         run: |
           git config user.name "cb-bot"
           git config user.email "cb-bot@users.noreply.github.com"
           git add data   # data/raw 已被 .gitignore 排除
-          git commit -m "data: $(date +%F)" || echo "沒有新資料"
+          git commit -m "data: ${{ steps.check.outputs.day }}" || echo "沒有新資料"
+          git pull --rebase --autostash || true
           git push

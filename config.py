@@ -23,7 +23,8 @@ CB_QUOTES_URL = ("https://www.tpex.org.tw/storage/bond_zone/tradeinfo/cb/"
 TWSE_STOCK_PATH = "/exchangeReport/STOCK_DAY_ALL"          # 上市（只有最新一天，已改用下面的網址）
 TWSE_DAILY_URL = ("https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
                   "?date={ymd}&type=ALLBUT0999&response=json")  # 上市，可指定日期
-TPEX_STOCK_PATH = "/v1/tpex_mainboard_daily_close_quotes"  # 上櫃
+TPEX_STOCK_PATH = "/v1/tpex_mainboard_daily_close_quotes"  # 上櫃（只有最新一天、常斷線，已不用）
+TPEX_STOCK_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/otc"  # 上櫃，可指定日期（POST）
 
 # ── 欄位對照：左邊是我們程式用的名字，右邊是 API 實際欄位 ──────
 # 第一次跑 fetch 後打開 data/raw/*.json 看欄位，再改右邊的值
@@ -39,6 +40,7 @@ TERMS_FIELDS = {
     "balance": "OutstandingAmount",
     "currency": "Currency",
     "issuer_code": "IssuerCode",
+    "issue_date": "IssueDate",
 }
 # 行情 CSV 由 fetch.py 自己解析成固定欄位，不用改
 QUOTE_FIELDS = {"cb_id": "cb_id", "close": "close", "volume": "volume"}
