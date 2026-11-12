@@ -90,6 +90,20 @@ def fetch_twse_stocks(day):
     raise SystemExit("證交所回傳格式改了，找不到「證券代號、收盤價」欄位，請把錯誤訊息貼給 Claude。")
 
 
+def is_closed(day):
+    """判斷是不是休市：週末，或「可轉債行情檔不存在而且證交所也說沒有資料」。
+
+    只有可轉債檔不存在、證交所卻有資料時，代表資料真的出問題，不能當成休市。"""
+    d = dt.date.fromisoformat(day)
+    if d.weekday() >= 5:
+        return True
+    url = C.CB_QUOTES_URL.format(y=d.strftime("%Y"), ym=d.strftime("%Y%m"), ymd=d.strftime("%Y%m%d"))
+    if requests.get(url, timeout=30, headers=HEADERS).status_code != 404:
+        return False
+    j = get_json(C.TWSE_DAILY_URL.format(ymd=d.strftime("%Y%m%d")))
+    return j.get("stat") != "OK"
+
+
 def fetch_open_data(day):
     save(day, "cb_terms", get_json(C.TPEX_BASE + C.CB_TERMS_PATH))
     save(day, "cb_quotes", fetch_cb_quotes(day))
@@ -161,6 +175,12 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     day = args[0] if args else dt.date.today().isoformat()
     print(f"抓取 {day}")
+    if is_closed(day):
+        folder = C.RAW_DIR / day
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "closed.txt").write_text("休市", encoding="utf-8")
+        print(f"{day} 休市（週末或國定假日），不抓資料。")
+        return
     fetch_open_data(day)
     if "--no-inst" in sys.argv:
         print("已跳過法人資料。")

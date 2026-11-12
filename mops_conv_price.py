@@ -151,7 +151,20 @@ def main():
         return
     before, after = merge_into_file(changed[["cb_id", "conv_price", "effective_date"]])
     print(f"conv_price_adjustments.csv：{before} 筆 → {after} 筆")
+    save_snapshot(allcb)
     print("接著執行 python build.py <日期> 就會套用新的轉換價。")
+    print("記得把 data/conv_price_adjustments.csv、data/mops_snapshot.csv、data/mops_last_run.txt 推上 GitHub。")
+
+
+def save_snapshot(allcb):
+    """存下這次 MOPS 的完整清單與執行日期：
+    - mops_snapshot.csv：build.py 用來和櫃買中心的「發行時轉換價」交叉核對
+    - mops_last_run.txt：build.py 用來提醒「MOPS 多久沒更新」"""
+    today = dt.date.today().isoformat()
+    snap = allcb[["cb_id", "cb_name", "original", "conv_price", "effective_date"]].assign(fetched=today)
+    snap.to_csv(C.DATA_DIR / "mops_snapshot.csv", index=False, encoding="utf-8-sig")
+    (C.DATA_DIR / "mops_last_run.txt").write_text(today, encoding="utf-8")
+    print(f"已存 mops_snapshot.csv（{len(snap)} 檔）與執行日期 {today}")
 
 
 if __name__ == "__main__":

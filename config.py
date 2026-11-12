@@ -37,6 +37,8 @@ TERMS_FIELDS = {
     "put_price": "PutOptionPrice",
     "maturity": "MaturityDate",
     "balance": "OutstandingAmount",
+    "currency": "Currency",
+    "issuer_code": "IssuerCode",
 }
 # 行情 CSV 由 fetch.py 自己解析成固定欄位，不用改
 QUOTE_FIELDS = {"cb_id": "cb_id", "close": "close", "volume": "volume"}
