@@ -13,6 +13,7 @@ import altair as alt
 import streamlit as st
 
 import alerts
+import metrics as M
 
 DATA = Path(__file__).parent / "data"
 
@@ -41,6 +42,16 @@ def load_day(day):
 def load_history():
     frames = [load_day(d).assign(date=d) for d in available_days()]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def load_history_metrics():
+    return M.history_metrics(load_history())
+
+
+@st.cache_data(ttl=600)
+def load_market_series():
+    return M.market_series(load_history())
 
 
 @st.cache_data(ttl=600)
@@ -87,7 +98,7 @@ if not days:
     st.error("data 資料夾裡還沒有 daily_*.csv。請先執行 fetch.py 和 build.py。")
     st.stop()
 
-PAGES = ["首頁", "新手專區", "可轉債清單", "個股頁", "資料品質", "方法說明"]
+PAGES = ["首頁", "新手專區", "可轉債清單", "指標分析", "個股頁", "資料品質", "方法說明"]
 st.session_state.setdefault("page", "首頁")
 with st.sidebar:
     st.title("可轉債雷達")
@@ -287,6 +298,293 @@ def page_list():
         st.button(f"查看 {cb_id} {show.iloc[rows[0]]['名稱']} 的個股頁", on_click=go_to_detail, args=(cb_id,))
 
 
+# ── 指標分析 ────────────────────────────────────────────
+# 可以拿來畫圖的指標：欄位 → (顯示名稱, 數字格式)
+METRIC_OPTS = {
+    "premium": ("溢價率", ".1%"),
+    "conv_value": ("轉換價值", ",.1f"),
+    "cb_close": ("可轉債價", ",.2f"),
+    "moneyness": ("價內程度", ".1%"),
+    "ytp": ("賣回收益率（YTP）", ".1%"),
+    "ytm": ("到期收益率（YTM）", ".1%"),
+    "years_left": ("剩餘年限（年）", ".2f"),
+    "turnover_m": ("成交金額（百萬元）", ",.1f"),
+    "balance_100m": ("餘額（億元）", ",.2f"),
+    "stock_vol": ("股票年化波動度", ".1%"),
+    "stock_period_ret": ("股票區間報酬", ".1%"),
+    "cb_period_ret": ("可轉債區間報酬", ".1%"),
+    "emp_delta": ("實證 Delta", ".2f"),
+    "inst_net_5d": ("法人 5 日買超（張）", ",.0f"),
+}
+STYLE_SCALE = alt.Scale(domain=M.STYLE_ORDER, range=["#d94841", "#f2a541", "#3b7dd8", "#b0b0b0"])
+TOOLTIP = [alt.Tooltip("cb_name:N", title="名稱"), alt.Tooltip("cb_id:N", title="代號"),
+           alt.Tooltip("cb_style:N", title="債股性"),
+           alt.Tooltip("cb_close:Q", title="可轉債價", format=",.2f"),
+           alt.Tooltip("stock_close:Q", title="股價", format=",.2f"),
+           alt.Tooltip("conv_value:Q", title="轉換價值", format=",.1f"),
+           alt.Tooltip("premium:Q", title="溢價率", format=".1%"),
+           alt.Tooltip("ytp:Q", title="賣回收益率", format=".1%"),
+           alt.Tooltip("emp_delta:Q", title="實證 Delta", format=".2f"),
+           alt.Tooltip("volume:Q", title="成交（張）", format=",.0f")]
+
+
+def label(col):
+    return METRIC_OPTS[col][0]
+
+
+def pct_axis(fmt):
+    """百分比指標的座標軸顯示成 %，其他用預設格式。"""
+    return alt.Axis(format=".0%") if fmt.endswith("%") else alt.Axis()
+
+
+def axis(col, title=None, log=False, field_type="Q"):
+    fmt = METRIC_OPTS[col][1]
+    return dict(field=col, type="quantitative" if field_type == "Q" else "nominal",
+                title=title or label(col),
+                axis=pct_axis(fmt),
+                scale=alt.Scale(zero=False, type="symlog" if log else "linear"))
+
+
+def trim(data, cols, on):
+    """排除前後 2% 的極端值，讓圖不會被少數幾檔壓扁。"""
+    if not on:
+        return data
+    keep = pd.Series(True, index=data.index)
+    for c in cols:
+        lo, hi = data[c].quantile([0.02, 0.98])
+        keep &= data[c].between(lo, hi) | data[c].isna()
+    return data[keep]
+
+
+def selected_rows(event, data, brush="brush", point=None):
+    """把圖表上的框選／點選結果轉成資料列。"""
+    sel = (event or {}).get("selection", {}) if isinstance(event, dict) else getattr(event, "selection", {})
+    sel = dict(sel or {})
+    if point and sel.get(point):
+        ids = {p.get("cb_id") for p in sel[point] if isinstance(p, dict)}
+        return data[data["cb_id"].isin(ids)]
+    ranges = sel.get(brush) or {}
+    if not ranges:
+        return data.iloc[0:0]
+    keep = pd.Series(True, index=data.index)
+    for col, rng in ranges.items():
+        if col in data and isinstance(rng, (list, tuple)) and len(rng) == 2:
+            keep &= data[col].between(min(rng), max(rng))
+    return data[keep]
+
+
+def show_selection(rows, key):
+    if rows.empty:
+        st.caption("在圖上按住滑鼠拖曳框選一塊區域，下面就會列出框到的可轉債。")
+        return
+    cols = {"cb_id": "代號", "cb_name": "名稱", "cb_style": "債股性", "cb_close": "可轉債價", "premium": "溢價率",
+            "ytp": "賣回收益率", "emp_delta": "實證 Delta", "volume": "成交（張）"}
+    show = rows[list(cols)].rename(columns=cols).sort_values("溢價率")
+    st.write(f"框選到 **{len(show)}** 檔")
+    st.dataframe(show, hide_index=True, width="stretch", column_config={
+        "溢價率": st.column_config.NumberColumn(format="percent"),
+        "賣回收益率": st.column_config.NumberColumn(format="percent"),
+        "實證 Delta": st.column_config.NumberColumn(format="%.2f")})
+    pick = st.selectbox("查看個股頁", rows["cb_id"] + " " + rows["cb_name"], key=f"{key}-pick")
+    st.button("前往", key=f"{key}-go", on_click=go_to_detail, args=(pick.split()[0],))
+
+
+def page_metrics():
+    st.header("指標分析")
+    st.write("把可轉債（債券面＋轉換權）和普通股（波動、籌碼）的指標放在一起看。"
+             "圖表都可以互動：滑鼠移上去看數字、拖曳框選、點圖例只看某一類。")
+
+    data = M.add_metrics(df, day).join(load_history_metrics(), on="cb_id")
+    data["turnover_m"] = data["turnover"] / 1e6
+
+    with st.expander("篩選條件", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        only_traded = c1.checkbox("只看有成交", value=True, key="m-traded")
+        no_exch = c2.checkbox("排除交換債", value=True, key="m-exch")
+        only_conv = c3.checkbox("只看已可轉換", value=False, key="m-conv")
+        min_vol = c4.number_input("最低成交（張）", 0, 1000, 0, step=10, key="m-vol")
+    if only_traded:
+        data = data[data["traded_today"]]
+    if no_exch:
+        data = data[~data["is_exchangeable"]]
+    if only_conv:
+        data = data[~data["conv_not_started"]]
+    if min_vol:
+        data = data[data["volume"].fillna(0) >= min_vol]
+    if data.empty:
+        st.info("沒有符合篩選條件的可轉債。")
+        return
+
+    # 指標總覽
+    counts = data["cb_style"].value_counts()
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("檔數", f"{len(data)}")
+    c2.metric("溢價率中位數", pct(data["premium"].median()))
+    c3.metric("股性", f"{counts.get('股性', 0)} 檔", help=f"溢價率 ≤ {M.EQUITY_PREMIUM:.0%}")
+    c4.metric("平衡", f"{counts.get('平衡', 0)} 檔")
+    c5.metric("債性", f"{counts.get('債性', 0)} 檔", help=f"溢價率 ≥ {M.BOND_PREMIUM:.0%}")
+    c6.metric("實證 Delta 中位數", num(data["emp_delta"].median()))
+    n_days = len(available_days())
+    st.caption(f"歷史指標（波動度、區間報酬、實證 Delta）用目前累積的 {n_days} 個交易日計算，"
+               f"資料天數越多越穩定。實證 Delta 至少要 {M.MIN_PAIRS} 組「兩天都有成交」的報酬才計算。")
+
+    tab_map, tab_xy, tab_dist, tab_rank, tab_trend, tab_def = st.tabs(
+        ["股債性地圖", "自訂散佈圖", "分布", "排行", "市場趨勢", "指標說明"])
+    style_pick = alt.selection_point(name="style_pick", fields=["cb_style"], bind="legend")
+    color = alt.Color("cb_style:N", title="債股性", scale=STYLE_SCALE, legend=alt.Legend(orient="top"))
+    fade = alt.condition(style_pick, alt.value(0.8), alt.value(0.08))
+
+    # 1. 股債性地圖：可轉債價 vs 轉換價值
+    with tab_map:
+        st.caption("橫軸是轉換價值、縱軸是可轉債價。虛線上的點溢價率 = 0；越往右上越貼著虛線（股性），"
+                   "左邊的點價格被債券價值撐在 100 附近（債性）。泡泡大小是成交金額。")
+        pts = data.dropna(subset=["conv_value", "cb_close"])
+        pts = trim(pts, ["conv_value", "cb_close"], st.checkbox("排除極端值（前後 2%）", True, key="map-trim"))
+        mode = st.radio("滑鼠操作", ["框選列出名單", "縮放平移"], horizontal=True, key="map-mode")
+        brush = alt.selection_interval(name="brush", encodings=["x", "y"])
+        lo = float(min(pts["conv_value"].min(), pts["cb_close"].min()))
+        hi = float(max(pts["conv_value"].max(), pts["cb_close"].max()))
+        diag = alt.Chart(pd.DataFrame({"v": [lo, hi]})).mark_line(strokeDash=[5, 4], color="gray").encode(
+            x="v:Q", y="v:Q")
+        floor = alt.Chart(pd.DataFrame({"y": [100]})).mark_rule(color="#888", strokeDash=[2, 2]).encode(y="y:Q")
+        dots = alt.Chart(pts).mark_circle(stroke="white", strokeWidth=0.5).encode(
+            x=alt.X(**axis("conv_value")), y=alt.Y(**axis("cb_close")), color=color, opacity=fade,
+            size=alt.Size("turnover_m:Q", title="成交金額（百萬）", scale=alt.Scale(range=[15, 700]), legend=None),
+            tooltip=TOOLTIP)
+        if mode == "框選列出名單":
+            chart = alt.layer(dots.add_params(brush, style_pick), diag, floor).properties(height=480)
+            event = st.altair_chart(chart, width="stretch", on_select="rerun", key="map-chart")
+            show_selection(selected_rows(event, pts), "map")
+        else:
+            chart = alt.layer(dots.add_params(style_pick), diag, floor).properties(height=480).interactive()
+            st.altair_chart(chart, width="stretch")
+
+    # 2. 自訂散佈圖：任選兩個指標
+    with tab_xy:
+        keys = list(METRIC_OPTS)
+        c1, c2, c3 = st.columns([2, 2, 1])
+        x = c1.selectbox("橫軸", keys, index=keys.index("stock_vol"), format_func=label, key="xy-x")
+        y = c2.selectbox("縱軸", keys, index=keys.index("premium"), format_func=label, key="xy-y")
+        log = c3.checkbox("壓縮極端值（對數刻度）", key="xy-log")
+        pts = data.dropna(subset=[x, y])
+        pts = trim(pts, [x, y], st.checkbox("排除極端值（前後 2%）", True, key="xy-trim"))
+        st.caption(f"{len(pts)} 檔同時有「{label(x)}」和「{label(y)}」。虛線是趨勢線（線性迴歸）。")
+        if pts.empty:
+            st.info("這兩個指標目前沒有共同的資料。歷史指標需要多累積幾天。")
+        else:
+            corr = pts[x].corr(pts[y])
+            if pd.notna(corr):
+                st.write(f"相關係數：**{corr:+.2f}**（接近 ±1 代表兩個指標關係很強，接近 0 代表沒什麼關係）")
+            brush = alt.selection_interval(name="brush", encodings=["x", "y"])
+            base = alt.Chart(pts)
+            dots = base.mark_circle(size=70, stroke="white", strokeWidth=0.5).encode(
+                x=alt.X(**axis(x, log=log)), y=alt.Y(**axis(y, log=log)), color=color, opacity=fade,
+                tooltip=TOOLTIP + [alt.Tooltip(f"{x}:Q", title=label(x), format=METRIC_OPTS[x][1]),
+                                   alt.Tooltip(f"{y}:Q", title=label(y), format=METRIC_OPTS[y][1])])
+            trend = base.transform_regression(x, y).mark_line(color="gray", strokeDash=[5, 4]).encode(
+                x=f"{x}:Q", y=f"{y}:Q")
+            chart = alt.layer(dots.add_params(brush, style_pick), trend).properties(height=460)
+            event = st.altair_chart(chart, width="stretch", on_select="rerun", key="xy-chart")
+            show_selection(selected_rows(event, pts), "xy")
+
+    # 3. 分布：直方圖＋各類別箱型圖
+    with tab_dist:
+        m = st.selectbox("指標", list(METRIC_OPTS), index=0, format_func=label, key="dist-m")
+        vals = trim(data.dropna(subset=[m]), [m], st.checkbox("排除極端值（前後 2%）", True, key="dist-trim"))
+        if vals.empty:
+            st.info("這個指標目前沒有資料。")
+        else:
+            q = vals[m].quantile([0.25, 0.5, 0.75])
+            fmt = METRIC_OPTS[m][1]
+            f = (lambda v: f"{v:{fmt}}")
+            st.write(f"{len(vals)} 檔：第 25 百分位 **{f(q[0.25])}**、中位數 **{f(q[0.5])}**、第 75 百分位 **{f(q[0.75])}**")
+            hist = alt.Chart(vals).mark_bar().encode(
+                x=alt.X(f"{m}:Q", bin=alt.Bin(maxbins=40), title=label(m),
+                        axis=pct_axis(fmt)),
+                y=alt.Y("count():Q", title="檔數", stack=True), color=color, opacity=fade,
+                tooltip=[alt.Tooltip("cb_style:N", title="債股性"), alt.Tooltip("count():Q", title="檔數")]
+            ).add_params(style_pick).properties(height=300)
+            box = alt.Chart(vals).mark_boxplot(extent=1.5, size=28).encode(
+                x=alt.X(f"{m}:Q", title=label(m), axis=pct_axis(fmt)),
+                y=alt.Y("cb_style:N", title=None, sort=M.STYLE_ORDER),
+                color=alt.Color("cb_style:N", scale=STYLE_SCALE, legend=None)).properties(height=180)
+            st.altair_chart(hist, width="stretch")
+            st.caption("箱型圖：各類別的分布。盒子是中間 50%，中線是中位數，點是離群值。")
+            st.altair_chart(box, width="stretch")
+
+    # 4. 排行
+    with tab_rank:
+        c1, c2, c3 = st.columns([2, 1, 1])
+        m = c1.selectbox("依哪個指標排行", list(METRIC_OPTS), index=list(METRIC_OPTS).index("ytp"),
+                         format_func=label, key="rank-m")
+        desc = c2.radio("順序", ["由高到低", "由低到高"], horizontal=True, key="rank-dir") == "由高到低"
+        n = c3.slider("顯示幾檔", 5, 40, 15, key="rank-n")
+        top = data.dropna(subset=[m]).sort_values(m, ascending=not desc).head(n).copy()
+        if top.empty:
+            st.info("這個指標目前沒有資料。")
+        else:
+            top["label"] = top["cb_name"] + "（" + top["cb_id"] + "）"
+            click = alt.selection_point(name="pick", fields=["cb_id"])
+            fmt = METRIC_OPTS[m][1]
+            bars = alt.Chart(top).mark_bar().encode(
+                x=alt.X(f"{m}:Q", title=label(m), axis=pct_axis(fmt)),
+                y=alt.Y("label:N", title=None, sort="-x" if desc else "x", axis=alt.Axis(labelLimit=220)),
+                color=color,
+                opacity=alt.condition(click, alt.value(1), alt.value(0.35)),
+                tooltip=TOOLTIP + [alt.Tooltip(f"{m}:Q", title=label(m), format=fmt)]
+            ).add_params(click).properties(height=alt.Step(26))
+            event = st.altair_chart(bars, width="stretch", on_select="rerun", key="rank-chart")
+            rows = selected_rows(event, top, point="pick")
+            if rows.empty:
+                st.caption("點一下長條可以選取，再前往個股頁。")
+            else:
+                r = rows.iloc[0]
+                st.button(f"查看 {r['cb_name']}（{r['cb_id']}）的個股頁", on_click=go_to_detail,
+                          args=(r["cb_id"],), key="rank-go")
+            if m == "ytp":
+                st.warning("賣回收益率特別高，通常代表市場擔心公司的還款能力（價格被壓低），"
+                           "不是單純的便宜。請搭配成交量與公司體質判斷。")
+
+    # 5. 市場趨勢
+    with tab_trend:
+        ms = load_market_series()
+        if len(ms) < 2:
+            st.info("累積兩天以上資料後會出現趨勢圖。")
+        else:
+            ms = ms.reset_index().rename(columns={"date": "日期"})
+            hover = alt.selection_point(name="hover", fields=["日期"], nearest=True, on="pointerover", empty=False)
+            base = alt.Chart(ms).encode(x=alt.X("日期:N", title=None))
+            line = base.mark_line(color="#d94841", point=alt.OverlayMarkDef(color="#d94841")).encode(
+                y=alt.Y("溢價率中位數:Q", axis=alt.Axis(format=".0%"), scale=alt.Scale(zero=False)))
+            bars = base.mark_bar(opacity=0.3, color="#3b7dd8").encode(
+                y=alt.Y("折價檔數（已可轉換）:Q", title="折價檔數（已可轉換）"))
+            rule = base.mark_rule(color="gray").encode(
+                opacity=alt.condition(hover, alt.value(0.6), alt.value(0)),
+                tooltip=["日期", alt.Tooltip("溢價率中位數:Q", format=".1%"), "折價檔數（已可轉換）", "有成交檔數"]
+            ).add_params(hover)
+            st.caption("藍柱：已可轉換且折價的檔數（左軸）；紅線：全市場溢價率中位數（右軸）。滑鼠移到某一天可看數字。"
+                       "溢價率中位數下降、折價檔數增加，通常代表股市偏強或可轉債相對便宜。")
+            st.altair_chart(alt.layer(bars, line, rule).resolve_scale(y="independent").properties(height=300),
+                            width="stretch")
+            share = ms.melt("日期", ["股性占比", "平衡占比", "債性占比"], var_name="類別", value_name="占比").dropna()
+            share["類別"] = share["類別"].str.replace("占比", "")
+            area = alt.Chart(share).mark_area().encode(
+                x=alt.X("日期:N", title=None),
+                y=alt.Y("占比:Q", stack="normalize", axis=alt.Axis(format=".0%"), title="占比"),
+                color=alt.Color("類別:N", scale=STYLE_SCALE, sort=M.STYLE_ORDER, legend=alt.Legend(orient="top")),
+                order=alt.Order("類別:N"),
+                tooltip=["日期", "類別", alt.Tooltip("占比:Q", format=".1%")]).properties(height=240)
+            st.caption("有成交的可轉債中，股性、平衡、債性各占多少。股性比例上升通常代表股價普遍上漲。")
+            st.altair_chart(area, width="stretch")
+
+    # 6. 指標說明
+    with tab_def:
+        st.dataframe(pd.DataFrame(M.INDICATORS, columns=["指標", "類別", "公式", "怎麼解讀"]),
+                     hide_index=True, width="stretch")
+        st.caption("債股性的分界（10%、40%）是本專案為了方便觀察設定的門檻，不是官方定義；可以在 metrics.py 調整。"
+                   "本頁僅供研究，不構成投資建議。")
+
+
 # ── 個股頁 ──────────────────────────────────────────────
 def page_detail():
     options = (df["cb_id"] + " " + df["cb_name"]).tolist()
@@ -429,5 +727,6 @@ def page_method():
 """)
 
 
-{"首頁": page_home, "新手專區": page_beginner, "可轉債清單": page_list, "個股頁": page_detail,
+{"首頁": page_home, "新手專區": page_beginner, "可轉債清單": page_list, "指標分析": page_metrics,
+ "個股頁": page_detail,
  "資料品質": page_quality, "方法說明": page_method}[st.session_state.page]()
