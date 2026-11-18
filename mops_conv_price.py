@@ -16,6 +16,7 @@ import datetime as dt
 import io
 import re
 import sys
+import time
 
 import pandas as pd
 import requests
@@ -59,9 +60,25 @@ ADJ_PATH = C.DATA_DIR / "conv_price_adjustments.csv"
 RAW_DIR = C.RAW_DIR / "mops"
 
 
+TRIES = 3   # 連線被切斷時最多試幾次（第 n 次失敗後等 n × 30 秒）
+
+
 def download():
-    r = requests.post(MOPS_URL, data=FORM, timeout=120, headers=HEADERS)
-    r.raise_for_status()
+    """2026-11-18：MOPS 偶爾會在下載途中切斷連線（ConnectionResetError 10054），
+    所以失敗時等一下再試，最多 3 次；仍然每次只送一個請求。"""
+    for attempt in range(1, TRIES + 1):
+        try:
+            print(f"向 MOPS 送出查詢（第 {attempt} 次），回傳約 10 MB，請稍候…")
+            r = requests.post(MOPS_URL, data=FORM, timeout=180, headers=HEADERS)
+            r.raise_for_status()
+            break
+        except requests.RequestException as e:
+            if attempt == TRIES:
+                raise SystemExit(f"連續 {TRIES} 次都連不上 MOPS（{type(e).__name__}）。"
+                                 "可能是網站忙碌或維護中，請過一陣子（例如明天白天）再跑一次。")
+            wait = 30 * attempt
+            print(f"  連線失敗（{type(e).__name__}），{wait} 秒後再試…")
+            time.sleep(wait)
     r.encoding = r.apparent_encoding or "utf-8"
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     path = RAW_DIR / f"t120sb02_{dt.date.today():%Y%m%d}.html"
