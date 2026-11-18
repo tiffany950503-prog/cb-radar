@@ -7,7 +7,7 @@
 - 證交所＋櫃買中心：三大法人買賣超日報（一次全市場，近 5 個交易日）
 
 用法：
-  python fetch.py                    # 今天
+  python fetch.py                    # 今天（台灣日期）
   python fetch.py 2026-10-20         # 指定日期
   python fetch.py 2026-10-20 --no-inst   # 跳過法人
 """
@@ -223,7 +223,7 @@ def log_fetch(day, status, message=""):
         w = csv.writer(f)
         if new:
             w.writerow(["run_at", "day", "status", "message"])
-        w.writerow([dt.datetime.now().strftime("%Y-%m-%d %H:%M"), day, status, message.replace("\n", " ")[:300]])
+        w.writerow([C.tw_now().strftime("%Y-%m-%d %H:%M"), day, status, message.replace("\n", " ")[:300]])
 
 
 def run(day, with_inst=True):
@@ -251,7 +251,7 @@ def run(day, with_inst=True):
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--") and a.strip()]
-    day = args[0] if args else dt.date.today().isoformat()
+    day = args[0] if args else C.tw_today()
     try:
         run(day, with_inst="--no-inst" not in sys.argv)
     except Exception as e:

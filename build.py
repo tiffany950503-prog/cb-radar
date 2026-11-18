@@ -419,4 +419,4 @@ def _has_table(con):
 
 
 if __name__ == "__main__":
-    build(sys.argv[1] if len(sys.argv) > 1 else dt.date.today().isoformat())
+    build(sys.argv[1] if len(sys.argv) > 1 else C.tw_today())

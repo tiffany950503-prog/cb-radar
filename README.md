@@ -12,7 +12,7 @@ build.py              串表＋計算＋健康檢查 → data/cb.db、data/daily
 mops_conv_price.py    MOPS 最新轉換價 → data/conv_price_adjustments.csv（每週手動）
 check_ready.py        檢查今天的資料出來了沒（決定排程時間用）
 verify_sample.py      抽 30～50 檔產生核對表、計算和外部資料的一致率
-backfill.py           補抓缺少的交易日
+backfill.py           補抓缺少的交易日（排程用 --auto 自動補）
 alerts.py             今日訊號的判斷條件
 app.py                研究 App（streamlit run app.py）
 discover_endpoints.py 列出櫃買中心 OpenAPI 的債券端點（已用過，留作參考）
@@ -136,12 +136,16 @@ python verify_sample.py check 2026-10-30   # 印出一致率與不一致清單
 
 ## 自動排程
 
-`.github/workflows/daily.yml` 設定在**每個交易日台灣時間 17:30** 執行 `fetch.py` 和 `build.py`
-（2026-10-22 用 `check_ready.py` 確認 17:15 時資料已到齊），**19:30 再跑一次當備援**：
-17:30 已經成功的話會自動跳過。
+`.github/workflows/daily.yml` 每個交易日排三個時段：台灣時間 **17:30**、**19:30**、**隔天 08:00**。
+每次都執行 `python backfill.py --auto`：檢查最近 30 天，把**還沒有結果表的交易日**依日期補齊。
 
+- **為什麼這樣設計**：GitHub 的排程實際上常常延遲 8 小時以上（2026-11 的紀錄多在台灣半夜 1～3 點才跑），
+  偶爾也會整次失敗。舊版只抓「今天」，失敗的那天就永遠缺著；新版下一次排程會自動補，不用手動處理。
+- 日期一律用**台灣時間**（`config.tw_today()`），排程延遲到台灣半夜也不會抓錯日子。
+- 台灣時間 17:00 以前不抓當天（收盤資料還沒出齊）；已判定休市的日子不會重抓。
+- 一次最多補 8 天，剩下的下一次接著補。沒有缺資料時，整次只要十幾秒。
 - 每個請求最多等 30 秒，失敗會自動重試 4 次。
-- 每次抓取的結果（成功、休市、失敗與原因）記在 `data/fetch_log.csv`，App 的「資料品質」頁也看得到。
+- 每次抓取的結果（成功、休市、失敗與原因）記在 `data/fetch_log.csv`（台灣時間），App 的「資料品質」頁也看得到。
 - 2026-10～11 有 6 天排程失敗，原因都是上櫃股價下載到一半被切斷，已改用新的資料來源並加上重試。
 
 ### 補抓缺少的日子
@@ -149,9 +153,11 @@ python verify_sample.py check 2026-10-30   # 印出一致率與不一致清單
 ```powershell
 python backfill.py 2026-10-23 2026-11-05 --dry   # 先看會補哪幾天
 python backfill.py 2026-10-23 2026-11-05         # 真的補抓
+python backfill.py --auto --dry                  # 看自動模式會補哪幾天
 ```
 
-也可以在 GitHub 的 Actions 頁面按 **Run workflow**，填入要補的日期。
+通常不需要手動補，排程會自己補。要立刻補的話，到 GitHub 的 Actions 頁面按 **Run workflow**：
+日期留空 = 自動補齊；填日期 = 只補那一天。
 
 1. 推上 GitHub（`.gitignore` 會排除 `.venv`、`data/raw`）。不需要任何金鑰。
 2. 到 Actions 分頁按 `Run workflow` 手動測一次，確認 GitHub 的國外伺服器連得到證交所和櫃買中心。

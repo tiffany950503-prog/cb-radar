@@ -1,5 +1,19 @@
 """共用設定。欄位對照表要在第一次跑完 discover 之後，依實際欄位名稱修改。"""
+import datetime as _dt
 from pathlib import Path
+
+# 台灣時間（UTC+8，沒有日光節約）。GitHub 的伺服器用 UTC，日期一律用這裡換算，
+# 不要直接用 date.today()，否則排程延遲到台灣半夜以後會抓錯日子。
+TW_TZ = _dt.timezone(_dt.timedelta(hours=8))
+DATA_READY_HOUR = 17   # 台灣時間幾點以後，當天的收盤資料才算出齊
+
+
+def tw_now():
+    return _dt.datetime.now(TW_TZ)
+
+
+def tw_today():
+    return tw_now().date().isoformat()
 
 DATA_DIR = Path(__file__).parent / "data"
 RAW_DIR = DATA_DIR / "raw"
