@@ -90,7 +90,10 @@ def fetch_cb_quotes(day):
     r = request("GET", url, ok_404=True)
     if r.status_code == 404:
         raise RuntimeError(f"{day} 還沒有可轉債行情檔（證交所已有資料，可能是櫃買中心還沒產生）")
-    return parse_cb_csv(r.content.decode("cp950", errors="replace"))
+    rows = parse_cb_csv(r.content.decode("cp950", errors="replace"))
+    if not rows:
+        raise RuntimeError(f"{day} 的可轉債行情檔是空的（證交所有資料，可能是櫃買中心還沒產生完整檔案）")
+    return rows
 
 
 def fetch_twse_stocks(day):
@@ -134,14 +137,17 @@ def fetch_tpex_stocks(day):
 
 
 def is_closed(day):
-    """判斷是不是休市：週末，或「可轉債行情檔不存在而且證交所也說沒有資料」。
+    """判斷是不是休市：週末，或「可轉債行情檔不存在或沒有行情，而且證交所也說沒有資料」。
 
     只有可轉債檔不存在、證交所卻有資料時，代表資料真的出問題，不能當成休市。"""
     d = dt.date.fromisoformat(day)
     if d.weekday() >= 5:
         return True
     url = C.CB_QUOTES_URL.format(y=d.strftime("%Y"), ym=d.strftime("%Y%m"), ymd=d.strftime("%Y%m%d"))
-    if request("GET", url, ok_404=True).status_code != 404:
+    r = request("GET", url, ok_404=True)
+    # 2026-11-18：發現國定假日（例如 10/26 光復節補假）櫃買中心不是回 404，
+    # 而是回一個「沒有任何行情」的空檔案，所以 0 筆也要當成可能休市，再問證交所確認。
+    if r.status_code != 404 and parse_cb_csv(r.content.decode("cp950", errors="replace")):
         return False
     j = get_json(C.TWSE_DAILY_URL.format(ymd=d.strftime("%Y%m%d")))
     return j.get("stat") != "OK"
